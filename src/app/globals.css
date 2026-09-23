@@ -1,26 +1,40 @@
 @import "tailwindcss";
 
+@theme {
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0A0A0A;
+  --foreground: #F5F5F5;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  /* Prevent rubber-banding on macOS/iOS from interfering with scroll triggers */
+  overscroll-behavior: none;
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--background);
+  overscroll-behavior: none;
+
+  /* Hide scrollbar for cinematic feel */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+body::-webkit-scrollbar {
+  display: none;
+}
+
+/* Smooth canvas rendering — avoid the pixelated look */
+canvas {
+  image-rendering: auto;
+}
+
+/* Ensure will-change is only on animated elements to help GPU compositing */
+.will-change-transform {
+  will-change: transform;
 }
