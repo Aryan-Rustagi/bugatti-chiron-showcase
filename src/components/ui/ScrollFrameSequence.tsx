@@ -163,6 +163,13 @@ export function ScrollFrameSequence({
       return new Promise((resolve) => {
         const img = new Image();
         img.src = getFrameUrl(i);
+        img.decoding = "async"; // Prevents main thread blocking during decode
+        if (i === 1) {
+          img.fetchPriority = "high";
+        } else {
+          img.fetchPriority = "low";
+        }
+
         img.onload = () => {
           arr[i] = img;
           loadedCountRef.current++;
@@ -183,24 +190,50 @@ export function ScrollFrameSequence({
       });
     };
 
-    // Load in sequential batches of 30
-    const loadBatch = async (start: number) => {
-      const end = Math.min(start + 30, frameCount + 1);
-      const promises: Promise<void>[] = [];
-      for (let i = start; i < end; i++) {
-        promises.push(loadImage(i));
-      }
-      await Promise.all(promises);
+    // Load first frame immediately for quick initial display
+    loadImage(1);
 
-      if (end <= frameCount) {
-        // Small yield to let the browser breathe
-        setTimeout(() => loadBatch(end), 16);
-      } else {
-        onLoaded?.();
-      }
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Load the rest of the frames when the container is near the viewport
+    const loadRest = async () => {
+      // Use smaller batches to avoid overwhelming the network
+      const batchSize = 10;
+      const loadBatch = async (start: number) => {
+        const end = Math.min(start + batchSize, frameCount + 1);
+        const promises: Promise<void>[] = [];
+        
+        for (let i = start; i < end; i++) {
+          if (i !== 1) promises.push(loadImage(i));
+        }
+        
+        await Promise.all(promises);
+
+        if (end <= frameCount) {
+          // Small yield to let the browser breathe
+          setTimeout(() => loadBatch(end), 16);
+        } else {
+          onLoaded?.();
+        }
+      };
+      
+      loadBatch(2);
     };
 
-    loadBatch(1);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadRest();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200% 0px" } // Start loading when within 2 screens of the viewport
+    );
+
+    observer.observe(container);
+
+    return () => observer.disconnect();
   }, [frameCount, getFrameUrl, onLoadProgress, onLoaded, renderFrame]);
 
   // --- ScrollTrigger setup ---
