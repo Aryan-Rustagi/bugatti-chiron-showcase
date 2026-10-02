@@ -88,9 +88,7 @@ export function EngineeringSection() {
         {/* Frame sequence */}
         <ScrollFrameSequence
           folder="engine"
-          prefix="engine_"
           frameCount={150}
-          padLength={4}
         />
 
         {/* Film grain */}

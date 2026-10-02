@@ -9,16 +9,10 @@ if (typeof window !== "undefined") {
 }
 
 interface ScrollFrameSequenceProps {
-  /** Subfolder under /frames/, e.g. "hero" → /frames/hero/ */
+  /** Subfolder under /frames/, e.g. "hero" → /frames/hero/hero.bin */
   folder: string;
-  /** Filename prefix, e.g. "hero_" → hero_0001.jpg */
-  prefix: string;
   /** Total number of frames (1-indexed) */
   frameCount: number;
-  /** File extension including dot */
-  extension?: string;
-  /** Zero-pad width for the frame number */
-  padLength?: number;
   /** Called during loading with 0..1 progress */
   onLoadProgress?: (progress: number) => void;
   /** Called when all frames are loaded */
@@ -26,52 +20,49 @@ interface ScrollFrameSequenceProps {
 }
 
 /**
- * ScrollFrameSequence
+ * ScrollFrameSequence — High-Performance Binary Frame Player
  *
- * Renders a sequence of JPEG frames to an HTML5 <canvas> element,
- * scrubbed by scroll position via GSAP ScrollTrigger.
+ * Architecture (zero main-thread decode):
  *
- * Architecture:
- * 1. The component expects to be placed inside a <section> with a
- *    tall height (e.g. 200vh) and a sticky inner container (100vh).
- * 2. A ScrollTrigger on the parent <section> maps scroll progress
- *    (0..1) → frame index (1..frameCount).
- * 3. Frames are preloaded in batches of 30 ahead of the current
- *    scroll position, with the first batch loaded eagerly.
- * 4. The canvas uses an "object-cover" draw algorithm so the frame
- *    always fills the viewport regardless of aspect ratio.
- * 5. All updates happen via refs (zero React re-renders during scroll).
+ *  ┌─────────────────────────────────────────────────────────────────────┐
+ *  │  Build time: pack_frames.py                                         │
+ *  │  200 × 900 KB JPEGs → hero.bin (single ~20 MB WebP sprite file)   │
+ *  └─────────────────────────────────────────────────────────────────────┘
+ *                              ↓ 1 HTTP fetch
+ *  ┌─────────────────────────────────────────────────────────────────────┐
+ *  │  frame-worker.js (Web Worker)                                       │
+ *  │  createImageBitmap() per frame → GPU decode, off main thread        │
+ *  │  Transfers ImageBitmap[] back via postMessage (zero copy)           │
+ *  └─────────────────────────────────────────────────────────────────────┘
+ *                              ↓ rAF
+ *  ┌─────────────────────────────────────────────────────────────────────┐
+ *  │  Canvas drawImage(ImageBitmap) — GPU blit, zero decode overhead     │
+ *  └─────────────────────────────────────────────────────────────────────┘
+ *
+ * - Zero re-renders during scroll (all state in refs)
+ * - Object-cover canvas scaling
+ * - Falls back gracefully if .bin is missing (tries /frames/<folder>/<folder>.bin)
  */
 export function ScrollFrameSequence({
   folder,
-  prefix,
   frameCount,
-  extension = ".jpg",
-  padLength = 4,
   onLoadProgress,
   onLoaded,
 }: ScrollFrameSequenceProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Store all images in a ref to avoid re-renders
-  const imagesRef = useRef<(HTMLImageElement | null)[]>([]);
-  const currentFrameRef = useRef(1);
-  const hasInitRef = useRef(false);
-  const loadedCountRef = useRef(0);
-
-  // Build the URL for a given 1-indexed frame number
-  const getFrameUrl = useCallback(
-    (index: number) => {
-      const num = String(index).padStart(padLength, "0");
-      return `/frames/${folder}/${prefix}${num}${extension}`;
-    },
-    [folder, prefix, padLength, extension]
+  // ImageBitmap[] array — slot 0 unused (1-indexed)
+  const bitmapsRef = useRef<(ImageBitmap | null)[]>(
+    new Array(frameCount + 1).fill(null)
   );
+  const currentFrameRef = useRef(1);
+  const loadedCountRef = useRef(0);
+  const workerRef = useRef<Worker | null>(null);
 
   /**
-   * Draw a single frame to the canvas using object-cover scaling.
-   * This is called from requestAnimationFrame so it's fast.
+   * Draw a single frame using object-cover scaling.
+   * ImageBitmap.drawImage is a GPU blit — no decode, no copy.
    */
   const renderFrame = useCallback(
     (frameIndex: number) => {
@@ -80,40 +71,36 @@ export function ScrollFrameSequence({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Clamp frame index
       const idx = Math.max(1, Math.min(frameCount, frameIndex));
 
-      // Find the closest loaded image (fall back to nearest lower frame)
-      let img = imagesRef.current[idx] ?? null;
-      if (!img) {
+      // Find the closest loaded bitmap (fall back to nearest lower frame)
+      let bmp = bitmapsRef.current[idx] ?? null;
+      if (!bmp) {
         for (let i = idx - 1; i >= 1; i--) {
-          if (imagesRef.current[i]) {
-            img = imagesRef.current[i];
+          if (bitmapsRef.current[i]) {
+            bmp = bitmapsRef.current[i];
             break;
           }
         }
       }
-      if (!img) return;
+      if (!bmp) return;
 
       // --- Object-cover draw ---
       const cw = canvas.width;
       const ch = canvas.height;
-      const iw = img.naturalWidth || img.width;
-      const ih = img.naturalHeight || img.height;
+      const iw = bmp.width;
+      const ih = bmp.height;
 
       const canvasRatio = cw / ch;
       const imgRatio = iw / ih;
 
       let sw: number, sh: number, sx: number, sy: number;
-
       if (imgRatio > canvasRatio) {
-        // Image is wider than canvas → crop sides
         sh = ih;
         sw = ih * canvasRatio;
         sx = (iw - sw) / 2;
         sy = 0;
       } else {
-        // Image is taller than canvas → crop top/bottom
         sw = iw;
         sh = iw / canvasRatio;
         sx = 0;
@@ -123,7 +110,7 @@ export function ScrollFrameSequence({
       ctx.clearRect(0, 0, cw, ch);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+      ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, cw, ch);
     },
     [frameCount]
   );
@@ -139,8 +126,6 @@ export function ScrollFrameSequence({
       const rect = container.getBoundingClientRect();
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
-
-      // Re-draw current frame at new size
       renderFrame(currentFrameRef.current);
     };
 
@@ -149,99 +134,78 @@ export function ScrollFrameSequence({
     return () => window.removeEventListener("resize", handleResize);
   }, [renderFrame]);
 
-  // --- Image preloading ---
+  // --- Worker-based binary frame loader ---
   useEffect(() => {
-    if (hasInitRef.current) return;
-    hasInitRef.current = true;
+    // Only load once and only in the browser
+    if (typeof window === "undefined") return;
 
-    // Allocate array (1-indexed, slot 0 unused)
-    const arr = new Array<HTMLImageElement | null>(frameCount + 1).fill(null);
-    imagesRef.current = arr;
+    // Initialize the bitmaps array fresh
+    bitmapsRef.current = new Array(frameCount + 1).fill(null);
     loadedCountRef.current = 0;
 
-    const loadImage = (i: number): Promise<void> => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.src = getFrameUrl(i);
-        img.decoding = "async"; // Prevents main thread blocking during decode
-        if (i === 1) {
-          img.fetchPriority = "high";
-        } else {
-          img.fetchPriority = "low";
-        }
+    const binUrl = `/frames/${folder}/${folder}.bin`;
 
-        img.onload = () => {
-          arr[i] = img;
+    // Spawn the Web Worker
+    const worker = new Worker("/workers/frame-worker.js");
+    workerRef.current = worker;
+
+    worker.addEventListener("message", (evt) => {
+      const msg = evt.data;
+
+      switch (msg.type) {
+        case "frame": {
+          // ImageBitmap arrives transferred (zero copy)
+          const { index, bitmap } = msg as { index: number; bitmap: ImageBitmap };
+          // Worker uses 0-indexed; our array is 1-indexed
+          bitmapsRef.current[index + 1] = bitmap;
           loadedCountRef.current++;
           onLoadProgress?.(loadedCountRef.current / frameCount);
 
-          // Draw first frame as soon as it loads
-          if (i === 1) {
-            currentFrameRef.current = 1;
+          // Show first frame immediately
+          if (index === 0 && currentFrameRef.current === 1) {
             renderFrame(1);
           }
-
-          resolve();
-        };
-        img.onerror = () => {
-          loadedCountRef.current++;
-          resolve();
-        };
-      });
-    };
-
-    // Load first frame immediately for quick initial display
-    loadImage(1);
-
-    const container = containerRef.current;
-    if (!container) return;
-
-    // Load the rest of the frames when the container is near the viewport
-    const loadRest = async () => {
-      // Use smaller batches to avoid overwhelming the network
-      const batchSize = 10;
-      const loadBatch = async (start: number) => {
-        const end = Math.min(start + batchSize, frameCount + 1);
-        const promises: Promise<void>[] = [];
-        
-        for (let i = start; i < end; i++) {
-          if (i !== 1) promises.push(loadImage(i));
+          break;
         }
-        
-        await Promise.all(promises);
 
-        if (end <= frameCount) {
-          // Small yield to let the browser breathe
-          setTimeout(() => loadBatch(end), 16);
-        } else {
+        case "progress": {
+          // Already handled per-frame above
+          break;
+        }
+
+        case "done": {
           onLoaded?.();
+          worker.terminate();
+          workerRef.current = null;
+          break;
         }
-      };
-      
-      loadBatch(2);
+
+        case "error": {
+          console.error("[ScrollFrameSequence] Worker error:", msg.message);
+          worker.terminate();
+          workerRef.current = null;
+          break;
+        }
+      }
+    });
+
+    // Start loading
+    worker.postMessage({ type: "load", binUrl });
+
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+      // Release all GPU bitmaps
+      bitmapsRef.current.forEach((bmp) => bmp?.close());
+      bitmapsRef.current = new Array(frameCount + 1).fill(null);
     };
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          loadRest();
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "200% 0px" } // Start loading when within 2 screens of the viewport
-    );
-
-    observer.observe(container);
-
-    return () => observer.disconnect();
-  }, [frameCount, getFrameUrl, onLoadProgress, onLoaded, renderFrame]);
+  }, [folder, frameCount, onLoadProgress, onLoaded, renderFrame]);
 
   // --- ScrollTrigger setup ---
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    // Walk up the DOM to find the parent <section>
     const section = container.closest("section");
     if (!section) return;
 
@@ -251,7 +215,6 @@ export function ScrollFrameSequence({
       end: "bottom bottom",
       scrub: 1,
       onUpdate: (self) => {
-        // Map progress 0..1 → frame 1..frameCount
         const frame = Math.round(self.progress * (frameCount - 1)) + 1;
         if (frame !== currentFrameRef.current) {
           currentFrameRef.current = frame;

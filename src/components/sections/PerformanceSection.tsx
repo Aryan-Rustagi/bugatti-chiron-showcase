@@ -124,9 +124,7 @@ export function PerformanceSection() {
         {/* Frame sequence */}
         <ScrollFrameSequence
           folder="speed"
-          prefix="speed_"
           frameCount={135}
-          padLength={4}
         />
 
         {/* Speed lines */}

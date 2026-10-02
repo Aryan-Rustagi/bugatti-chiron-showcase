@@ -80,9 +80,7 @@ export function DesignSection() {
         {/* Frame sequence */}
         <ScrollFrameSequence
           folder="rear"
-          prefix="rear_"
           frameCount={150}
-          padLength={4}
         />
 
         {/* Film grain */}

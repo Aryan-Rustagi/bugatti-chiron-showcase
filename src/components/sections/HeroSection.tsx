@@ -88,10 +88,7 @@ export function HeroSection() {
         {/* Frame Sequence */}
         <ScrollFrameSequence
           folder="hero"
-          prefix="hero_"
           frameCount={200}
-          padLength={4}
-          extension=".jpg"
         />
 
         {/* Vignette */}

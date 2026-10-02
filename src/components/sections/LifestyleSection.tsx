@@ -63,9 +63,7 @@ export function LifestyleSection() {
         {/* Frame sequence */}
         <ScrollFrameSequence
           folder="lifestyle"
-          prefix="frame_"
           frameCount={150}
-          padLength={3}
         />
 
         {/* Dark Vignette/Gradient overlay for text legibility */}

@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "pack-frames": "python tools/pack_frames.py",
+    "pack-frames:hero": "python tools/pack_frames.py --folder hero",
+    "pack-frames:quality": "python tools/pack_frames.py --quality"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
